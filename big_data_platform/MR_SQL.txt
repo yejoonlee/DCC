@@ -1,0 +1,145 @@
+# http://stat-computing.org/dataexpo/2009/
+# 2008년 운항데이터 다운로드
+# sed -i '1d' 2008.csv   명령으로 Header 삭제
+# 2008.csv를 hdfs에 업로드드
+
+1. AirlinePerformanceParser.java (공통)
+2. DepartureDelayCountMapper.java (mapper)
+3. DelayCountReducer.java (reducer)
+4. DepartureDelayCount.java (드라이버)
+
+# package 경로 정보 삭제
+# 공통 클래스 import 정보 삭제
+# 드라이버 클래스의 job 선언 수정
+->Job job = Job.getInstance(Configuration conf)
+
+# 위 4개 파일을 하나의 폴더에 넣고 컴파일
+javac -cp `hadoop classpath` *.java
+
+jar cf DD.jar *.class
+
+cp DD.jar ..
+cd ..
+
+hadoop jar ./DD.jar DepartureDelayCount /user/cloudera/2008.csv /user/cloudera/DD
+
+
+#맵리듀스(java) 프로그래밍시 추가 고려사항/기능
+>사용자 옵션 (GenericOption)  - hadoop jar 명령에 추가 옵션 지정
+  -D name=value, -conf filename
+> 복수 파일처리(input, output)
+> 압축 파일처리(압축코덱)
+> Join (Map side, Reduce side)
+> 정렬 
+> 체인 ChainMapper, ChainReducer 클래스 사용 
+(map->reduce, map->map->reduce, map->reduce->map)
+
+
+#hive 테이블 생성
+Create table airline_delay(
+Year INT, Month INT, DayofMonth INT,
+DayOfWeek INT, DepTime INT, CRSDepTime INT,
+ArrTime INT, CRSArrTime INT, UniqueCarrier STRING,
+FlightNum INT, TailNum STRING, ActualElapsedTime  INT,
+CRSElapsedTime INT, AirTime INT, ArrDelay  INT,
+DepDelay INT, Origin STRING, Dest STRING,
+Distance  INT, TaxiIn  INT, TaxiOut INT,
+Cancelled	 INT, 
+CancellationCode STRING
+COMMENT 'A = carrier, B = weather, C = NAS, D = security',
+Diverted  INT COMMENT '1 = yes, 0 = no',
+CarrierDelay STRING, WeatherDelay STRING, NASDelay STRING,
+SecurityDelay STRING, LateAircraftDelay STRING)
+PARTITIONED by (delayYear INT)
+ROW FORMAT DELIMITED
+	FIELDS TERMINATED BY ','
+	LINES TERMINATED BY '\n'
+	STORED AS TEXTFILE;
+
+#데이터 Load
+LOAD DATA INPATH '/user/cloudera/2008.csv'
+OVERWRITE INTO TABLE airline_delay
+PARTITION (delayYear =2008);
+
+#CREATE TABLE -> 지정된 위치(/user/hive/warehouse ?) 로 파일을 복제해 생성함
+#CREATE EXTERNAL TABLE -> 위의 지정된 위치 외부의 파일에 연결
+
+# HUE 에서 Job 상태 확인
+# 서버_IP:50070 (HDFS)
+# 서버_IP:8088 (리소스매니저)
+
+#항공사 코드, 이름 테이블 생성
+CREATE TABLE carrier_code(code STRING, company_name STRING)
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+LINES TERMINATED BY '\n'
+STORED AS TEXTFILE;
+
+LOAD DATA INPATH '/user/cloudera/carriers.csv'
+OVERWRITE INTO TABLE carrier_code;
+
+SELECT A.Year, A.UniqueCarrier, B.company_name, count(*)
+FROM airline_delay A
+JOIN carrier_code B ON(A.UniqueCarrier = B.code)
+WHERE ArrDelay > 0
+GROUP BY A.Year, A.UniqueCarrier, B.company_name;
+
+
+SELECT A.Year, A.UniqueCarrier, B.company_name, count(*)
+FROM airline_delay A, carrier_code B
+WHERE A.UniqueCarrier = B.code
+AND ArrDelay > 0
+GROUP BY A.Year, A.UniqueCarrier, B.company_name;
+
+#sqoop 예제
+sqoop import-all-tables \
+    -m 2 \
+    --connect jdbc:mysql://quickstart.cloudera:3306/retail_db \
+    --username=retail_dba \
+    --password=cloudera \
+    --compression-codec=snappy \
+    --warehouse-dir=/user/hive/warehouse \
+    --direct \
+    --hive-import
+
+sqoop import-all-tables \
+    -m 2 \
+    --connect jdbc:mysql://quickstart.cloudera:3306/retail_db \
+    --username=retail_dba \
+    --password=cloudera \
+    --warehouse-dir=/user/hive/warehouse \
+    --direct \
+    --hive-import
+
+sqoop import \
+    -m 2 \
+    --connect jdbc:mysql://quickstart.cloudera:3306/retail_db \
+    --username=retail_dba \
+    --password=cloudera \
+    --table orders \
+    --as-parquetfile \
+    --warehouse-dir=/user/hive/warehouse \
+    --hive-import
+
+truncate table orders
+
+sqoop import \
+    -m 2 \
+    --connect jdbc:mysql://quickstart.cloudera:3306/retail_db \
+    --username=retail_dba \
+    --password=cloudera \
+    --table orders \
+    --as-parquetfile \
+    --warehouse-dir=/user/hive/warehouse \
+    --hive-table orders  \
+    --hive-import
+
+
+select c.category_name, count(order_item_quantity) as count
+from order_items oi
+inner join products p on oi.order_item_product_id = p.product_id
+inner join categories c on c.category_id = p.product_category_id
+group by c.category_name
+order by count desc
+limit 10;
+
